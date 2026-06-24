@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ASSETMCP": {
+      "command": "C:\\path\\to\\ASSETMCP\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "assetmcp.server"
+      ],
+      "env": {
+        "ASSETMCP_LIBRARY_DIR": "C:\\path\\to\\ASSETMCP\\assets",
+        "ASSETMCP_PREVIEW_DIR": "C:\\path\\to\\ASSETMCP\\previews",
+        "ASSETMCP_MAX_DOWNLOAD_MB": "512"
+      }
+    }
+  }
+}

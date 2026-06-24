@@ -1,0 +1,50 @@
+[project]
+name = "assetmcp"
+version = "0.2.0"
+description = "ASSETMCP: MCP server for finding, downloading, extracting, previewing, and inspecting game assets."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Blake" }
+]
+keywords = ["mcp", "game-assets", "opengameart", "kenney", "ambientcg", "openverse"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Games/Entertainment",
+  "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+  "beautifulsoup4>=4.15.0",
+  "filetype>=1.2.0",
+  "httpx>=0.28.0",
+  "lxml>=6.1.0",
+  "mcp>=1.28.0",
+  "numpy>=2.5.0",
+  "pillow>=12.2.0",
+  "platformdirs>=4.10.0",
+  "py7zr>=1.1.0",
+  "pygltflib>=1.16.0",
+  "trimesh>=4.12.0"
+]
+
+[project.scripts]
+assetmcp = "assetmcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/evonar543/ASSETMCP"
+Repository = "https://github.com/evonar543/ASSETMCP"
+Issues = "https://github.com/evonar543/ASSETMCP/issues"
+
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
