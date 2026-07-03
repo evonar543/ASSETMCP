@@ -1,7 +1,7 @@
 [project]
 name = "assetmcp"
-version = "0.2.0"
-description = "ASSETMCP: MCP server for finding, downloading, extracting, previewing, and inspecting game assets."
+version = "0.3.0"
+description = "ASSETMCP Game Asset Forge: MCP server for safe game asset search, download, import, and prototype scaffolding."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 authors = [
   { name = "Blake" }
 ]
-keywords = ["mcp", "game-assets", "opengameart", "kenney", "ambientcg", "openverse"]
+keywords = ["mcp", "game-assets", "game-dev", "opengameart", "kenney", "ambientcg", "godot", "phaser"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",

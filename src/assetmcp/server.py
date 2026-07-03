@@ -9,7 +9,6 @@ touching disk.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import html
 import json
@@ -22,6 +21,7 @@ import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import copy2
 from typing import Any
 from urllib.parse import quote_plus, unquote, urljoin, urlparse
 
@@ -35,6 +35,21 @@ from mcp.server.fastmcp import FastMCP
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from pygltflib import GLTF2
 
+from assetmcp.providers import PROVIDERS, search_providers
+from assetmcp.schemas import AssetResult, normalize_asset_result
+from assetmcp.services.file_scanner import scan_suspicious_files
+from assetmcp.services.file_scanner import SUSPICIOUS_EXTS
+from assetmcp.services.license_checker import check_asset_license
+from assetmcp.services.manifest import (
+    CREDITS_FILENAME,
+    MANIFEST_FILENAME,
+    generate_credits_text,
+    load_manifest,
+    upsert_manifest_entry,
+    write_manifest,
+)
+from assetmcp.services.scaffolder import scaffold_game_project
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +61,7 @@ PREVIEW_ROOT = Path(
 ).resolve()
 MAX_DOWNLOAD_MB = int(os.environ.get("ASSETMCP_MAX_DOWNLOAD_MB", "512"))
 USER_AGENT = (
-    "ASSETMCP/0.2 (+https://modelcontextprotocol.io; asset discovery MCP server)"
+    "ASSETMCP/0.3 (+https://modelcontextprotocol.io; game asset forge MCP server)"
 )
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tga", ".tif", ".tiff"}
@@ -78,15 +93,10 @@ mcp = FastMCP(
     "ASSETMCP",
     log_level="ERROR",
     instructions=(
-        "Find, download, extract, preview, and inspect game assets. "
-        "Use search_asset_sources to search multiple sources at once, source-specific "
-        "search tools for OpenGameArt, Kenney, ambientCG, Openverse, and itch.io, "
-        "discover_page_assets for any asset page, "
-        "download_asset/download_page_assets to save files into the asset library, "
-        "extract_archive for packs, inspect_asset for shape/metadata awareness, "
-        "index_library/find_local_assets for browsing, make_image_contact_sheet or "
-        "create_asset_gallery for visual browsing, create_3d_viewer for GLB/GLTF previews, "
-        "and slice_sprite_sheet for extracting animation/tile frames."
+        "Game Asset Forge server. Search normalized providers with search_assets, "
+        "check licenses before download/import, track downloaded assets in "
+        "ASSET_MANIFEST.json and CREDITS.md, inspect and convert assets, and scaffold "
+        "playable prototypes for HTML Canvas, Phaser, Three.js, and Godot 4."
     ),
 )
 
@@ -237,6 +247,52 @@ def _file_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _manifest_path(root: Path | None = None) -> Path:
+    return (root or LIBRARY_ROOT) / MANIFEST_FILENAME
+
+
+def _credits_path(root: Path | None = None) -> Path:
+    return (root or LIBRARY_ROOT) / CREDITS_FILENAME
+
+
+def _error(code: str, message: str, **extra: Any) -> dict[str, Any]:
+    return {"ok": False, "error": {"code": code, "message": message, **extra}}
+
+
+def _ok(**payload: Any) -> dict[str, Any]:
+    return {"ok": True, **payload}
+
+
+def _asset_from_download_args(
+    *,
+    url: str,
+    title: str | None = None,
+    source_name: str | None = None,
+    source_url: str | None = None,
+    author: str | None = None,
+    license: str | None = None,
+    license_url: str | None = None,
+    asset_type: str | None = None,
+    tags: list[str] | None = None,
+    local_user_provided: bool = False,
+) -> AssetResult:
+    return AssetResult(
+        id=f"{source_name or 'direct'}:{title or Path(urlparse(url).path).name or url}",
+        title=title or Path(unquote(urlparse(url).path)).name or "Downloaded asset",
+        source_name=source_name or ("Local" if local_user_provided else "Direct URL"),
+        source_url=source_url or url,
+        author=author,
+        license=license or ("local user-provided" if local_user_provided else None),
+        license_url=license_url,
+        attribution_required=None,
+        asset_type=asset_type or _kind_for_url(url),
+        tags=tags or [],
+        download_url=url,
+        file_formats=[_extension_from_url(url).lstrip(".")] if _extension_from_url(url) else [],
+        confidence_score=0.5,
+    )
+
+
 async def _fetch_html(url: str) -> str:
     async with httpx.AsyncClient(
         follow_redirects=True,
@@ -263,6 +319,7 @@ async def _download(url: str, folder: Path, filename: str | None = None) -> dict
     """Stream a remote file into the library with size and path checks."""
     _ensure_roots()
     max_bytes = MAX_DOWNLOAD_MB * 1024 * 1024
+    hasher = hashlib.sha256()
     async with httpx.AsyncClient(
         follow_redirects=True,
         headers={"User-Agent": USER_AGENT},
@@ -290,10 +347,12 @@ async def _download(url: str, folder: Path, filename: str | None = None) -> dict
                         raise ValueError(
                             f"Download exceeded limit {max_bytes} bytes"
                         )
+                    hasher.update(chunk)
                     handle.write(chunk)
 
     summary = _file_summary(target)
     summary["source_url"] = url
+    summary["sha256"] = hasher.hexdigest()
     summary["saved"] = True
     return summary
 
@@ -381,7 +440,7 @@ def _parse_kenney_asset_page(url: str, html_text: str) -> dict[str, Any]:
         description=text,
     )
 
-def _extract_zip(archive: Path, destination: Path) -> list[Path]:
+def _extract_zip(archive: Path, destination: Path, *, allow_suspicious: bool = False) -> list[Path]:
     """Extract a zip after validating every member path."""
     extracted: list[Path] = []
     with zipfile.ZipFile(archive) as zf:
@@ -389,6 +448,8 @@ def _extract_zip(archive: Path, destination: Path) -> list[Path]:
             target = (destination / member.filename).resolve()
             if not _is_inside(target, destination):
                 raise ValueError(f"Unsafe zip member path: {member.filename}")
+            if not allow_suspicious and _is_suspicious_member(member.filename):
+                raise ValueError(f"Suspicious executable/script member blocked: {member.filename}")
         zf.extractall(destination)
         for member in zf.infolist():
             if not member.is_dir():
@@ -396,7 +457,7 @@ def _extract_zip(archive: Path, destination: Path) -> list[Path]:
     return extracted
 
 
-def _extract_tar(archive: Path, destination: Path) -> list[Path]:
+def _extract_tar(archive: Path, destination: Path, *, allow_suspicious: bool = False) -> list[Path]:
     """Extract a tar archive after validating every member path."""
     extracted: list[Path] = []
     with tarfile.open(archive) as tf:
@@ -404,6 +465,8 @@ def _extract_tar(archive: Path, destination: Path) -> list[Path]:
             target = (destination / member.name).resolve()
             if not _is_inside(target, destination):
                 raise ValueError(f"Unsafe tar member path: {member.name}")
+            if not allow_suspicious and _is_suspicious_member(member.name):
+                raise ValueError(f"Suspicious executable/script member blocked: {member.name}")
         tf.extractall(destination)
         for member in tf.getmembers():
             if member.isfile():
@@ -411,7 +474,7 @@ def _extract_tar(archive: Path, destination: Path) -> list[Path]:
     return extracted
 
 
-def _extract_7z(archive: Path, destination: Path) -> list[Path]:
+def _extract_7z(archive: Path, destination: Path, *, allow_suspicious: bool = False) -> list[Path]:
     """Extract a 7z archive after validating every member path."""
     with py7zr.SevenZipFile(archive, mode="r") as zf:
         names = zf.getnames()
@@ -419,6 +482,8 @@ def _extract_7z(archive: Path, destination: Path) -> list[Path]:
             target = (destination / name).resolve()
             if not _is_inside(target, destination):
                 raise ValueError(f"Unsafe 7z member path: {name}")
+            if not allow_suspicious and _is_suspicious_member(name):
+                raise ValueError(f"Suspicious executable/script member blocked: {name}")
         zf.extractall(destination)
     return [p for p in destination.rglob("*") if p.is_file()]
 
@@ -592,6 +657,10 @@ def _archive_manifest(path: Path, limit: int = 200) -> dict[str, Any]:
     }
 
 
+def _is_suspicious_member(name: str) -> bool:
+    return Path(name).suffix.lower() in SUSPICIOUS_EXTS
+
+
 def _discover_links(page_url: str, html_text: str) -> list[AssetLink]:
     """Find likely asset links on arbitrary HTML pages."""
     soup = BeautifulSoup(html_text, "lxml")
@@ -637,7 +706,291 @@ def library_info() -> dict[str, Any]:
         "supported_image_extensions": sorted(IMAGE_EXTS),
         "supported_model_extensions": sorted(MODEL_EXTS),
         "supported_archive_extensions": sorted(ARCHIVE_EXTS),
+        "providers": sorted(PROVIDERS.keys()),
+        "manifest_filename": MANIFEST_FILENAME,
+        "credits_filename": CREDITS_FILENAME,
     }
+
+
+@mcp.tool()
+async def search_assets(
+    query: str,
+    sources: list[str] | None = None,
+    max_results_per_source: int = 8,
+    license_policy: str = "safe",
+) -> dict[str, Any]:
+    """Search normalized asset providers with license-safety metadata."""
+    requested = {item.lower() for item in sources} if sources else None
+    provider_sources = [item for item in sources or [] if item.lower() != "local"] if sources else None
+    payload = await search_providers(
+        query,
+        PROVIDERS,
+        source_names=provider_sources,
+        max_results_per_source=max_results_per_source,
+    )
+    if requested is None or "local" in requested:
+        local = find_local_assets(query=query, max_results=max_results_per_source)
+        local_results = []
+        for item in local.get("results", []):
+            asset = AssetResult(
+                id=f"local:{item['path']}",
+                title=item["name"],
+                source_name="Local",
+                source_url=item["path"],
+                author="local user",
+                license="local user-provided",
+                attribution_required=False,
+                asset_type=item.get("asset_kind"),
+                tags=[item.get("extension", "").lstrip(".")],
+                preview_image_url=item["path"] if item.get("asset_kind") == "image" else None,
+                download_url=None,
+                file_formats=[item.get("extension", "").lstrip(".")],
+                confidence_score=0.95,
+                extra={"license_status": "allowed_local_user_provided", "license_allowed": True},
+            )
+            local_results.append(asset.to_dict())
+        payload["by_source"]["local"] = {"results": local_results}
+        payload["sources"].append("local")
+        payload["results"].extend(local_results)
+    if license_policy == "safe":
+        payload["results"] = [
+            item for item in payload["results"]
+            if item.get("extra", {}).get("license_allowed")
+        ]
+    payload["license_policy"] = license_policy
+    return payload
+
+
+@mcp.tool()
+async def get_asset_details(asset: dict[str, Any] | None = None, asset_url: str | None = None) -> dict[str, Any]:
+    """Return normalized details, license decision, and discoverable downloads for an asset."""
+    if not asset and not asset_url:
+        return _error("missing_asset", "Provide either an asset record or asset_url.")
+    normalized = normalize_asset_result(asset or {"url": asset_url, "source": "Direct URL"})
+    license_check = check_asset_license(normalized)
+    discover: dict[str, Any] | None = None
+    if normalized.source_url:
+        try:
+            discover = await discover_page_assets(normalized.source_url, max_results=50)
+        except Exception as exc:
+            discover = {"error": str(exc)}
+    return _ok(
+        asset=normalized.to_dict(),
+        license_check=license_check.to_dict(),
+        discovered_assets=discover,
+    )
+
+
+@mcp.tool()
+def suggest_asset_plan(
+    game_description: str,
+    style: str = "cc0",
+    target_engine: str = "html",
+) -> dict[str, Any]:
+    """Suggest practical asset searches and project folders for a game idea."""
+    terms = []
+    lowered = game_description.lower()
+    if "top" in lowered or "roguelike" in lowered:
+        terms.extend(["top-down tileset", "pixel character", "dungeon props"])
+    if "horror" in lowered:
+        terms.extend(["dark ambience audio", "horror props", "stone floor texture"])
+    if "3d" in lowered or target_engine.lower() in {"three", "godot"}:
+        terms.extend(["low poly environment", "low poly character", "cc0 sound effects"])
+    if not terms:
+        terms = ["player sprite", "enemy sprite", "environment tileset", "ui sound effects"]
+    return _ok(
+        game_description=game_description,
+        target_engine=target_engine,
+        preferred_license=style,
+        searches=[{"query": term, "sources": ["kenney", "ambientcg", "opengameart", "polyhaven"]} for term in dict.fromkeys(terms)],
+        folders=["assets/images", "assets/audio", "assets/models", "assets/ui"],
+        warnings=["Review non-CC0 licenses before download/import."],
+    )
+
+
+@mcp.tool()
+def create_asset_manifest(
+    project_path: str | None = None,
+    include_library_index: bool = True,
+) -> dict[str, Any]:
+    """Create or refresh ASSET_MANIFEST.json for a project or the asset library."""
+    root = Path(project_path).expanduser().resolve() if project_path else LIBRARY_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = _manifest_path(root)
+    manifest = load_manifest(manifest_path)
+    if include_library_index:
+        files = []
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and path.name not in {MANIFEST_FILENAME, CREDITS_FILENAME}:
+                files.append(
+                    {
+                        "path": str(path.relative_to(root)),
+                        "size_bytes": path.stat().st_size,
+                        "asset_kind": _kind_for_url(path.name),
+                        "sha256": _hash_file(path),
+                    }
+                )
+        manifest["scanned_files"] = files
+    write_manifest(manifest_path, manifest)
+    return _ok(manifest_path=str(manifest_path), asset_count=len(manifest.get("assets", [])))
+
+
+@mcp.tool()
+def generate_credits(project_path: str | None = None) -> dict[str, Any]:
+    """Generate CREDITS.md from ASSET_MANIFEST.json."""
+    root = Path(project_path).expanduser().resolve() if project_path else LIBRARY_ROOT
+    manifest_path = _manifest_path(root)
+    credits_path = _credits_path(root)
+    manifest = load_manifest(manifest_path)
+    text = generate_credits_text(manifest)
+    credits_path.parent.mkdir(parents=True, exist_ok=True)
+    credits_path.write_text(text, encoding="utf-8")
+    return _ok(credits_path=str(credits_path), credited_assets=text.count("\n- "))
+
+
+@mcp.tool()
+def audit_project_assets(project_path: str | None = None) -> dict[str, Any]:
+    """Audit manifests, credits, suspicious files, and unclear-license entries."""
+    root = Path(project_path).expanduser().resolve() if project_path else LIBRARY_ROOT
+    manifest_path = _manifest_path(root)
+    manifest = load_manifest(manifest_path)
+    unclear = [
+        item for item in manifest.get("assets", [])
+        if str(item.get("license_status", "")).startswith("blocked")
+    ]
+    missing_files = []
+    for item in manifest.get("assets", []):
+        for file_path in item.get("files", []):
+            path = Path(file_path)
+            if not path.is_absolute():
+                path = root / path
+            if not path.exists():
+                missing_files.append({"asset_id": item.get("id"), "file": file_path})
+    suspicious = scan_suspicious_files(root) if root.exists() else []
+    return _ok(
+        project_path=str(root),
+        manifest_path=str(manifest_path),
+        manifest_exists=manifest_path.exists(),
+        credits_exists=_credits_path(root).exists(),
+        blocked_or_unclear_license_count=len(unclear),
+        blocked_or_unclear_assets=unclear,
+        missing_files=missing_files,
+        suspicious_files=suspicious,
+        passed=not unclear and not missing_files and not suspicious,
+    )
+
+
+@mcp.tool()
+async def find_replacement_assets(
+    query: str,
+    blocked_asset: dict[str, Any] | None = None,
+    max_results: int = 8,
+) -> dict[str, Any]:
+    """Find CC0/public-domain replacement candidates for a blocked or unclear asset."""
+    search_query = query or (blocked_asset or {}).get("title") or "game asset"
+    results = await search_assets(
+        search_query,
+        sources=["kenney", "ambientcg", "polyhaven", "quaternius"],
+        max_results_per_source=max_results,
+        license_policy="safe",
+    )
+    return _ok(blocked_asset=blocked_asset, replacements=results["results"])
+
+
+@mcp.tool()
+def import_asset_to_project(
+    asset_path: str,
+    project_path: str,
+    asset: dict[str, Any] | None = None,
+    target_subfolder: str = "assets/imported",
+    local_user_provided: bool = False,
+) -> dict[str, Any]:
+    """Copy a local asset into a project and track it in manifest/credits."""
+    source = _resolve_read_path(asset_path)
+    if not source.exists() or not source.is_file():
+        return _error("missing_file", f"Asset file not found: {source}")
+    project = Path(project_path).expanduser().resolve()
+    destination_dir = project / target_subfolder
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / source.name
+    if destination.exists():
+        destination = destination_dir / f"{source.stem}-{hashlib.sha1(str(source).encode()).hexdigest()[:8]}{source.suffix}"
+    copy2(source, destination)
+    normalized = normalize_asset_result(asset or {
+        "id": f"local:{source.name}",
+        "title": source.name,
+        "source": "Local",
+        "url": str(source),
+        "license": "local user-provided" if local_user_provided else None,
+    })
+    license_check = check_asset_license(normalized, local_user_provided=local_user_provided)
+    if not license_check.allowed:
+        destination.unlink(missing_ok=True)
+        return _error("blocked_license", "Asset import blocked by license policy.", license_check=license_check.to_dict())
+    entry = upsert_manifest_entry(
+        _manifest_path(project),
+        normalized,
+        license_check,
+        [str(destination.relative_to(project))],
+        checksum_sha256=_hash_file(destination),
+    )
+    credits = generate_credits(project_path=str(project))
+    return _ok(imported_path=str(destination), manifest_entry=entry, credits=credits)
+
+
+@mcp.tool()
+def create_game_project(
+    project_path: str,
+    engine: str = "html",
+    title: str = "ASSETMCP Prototype",
+) -> dict[str, Any]:
+    """Create a playable prototype for HTML Canvas, Phaser, Three.js, or Godot 4."""
+    project = Path(project_path).expanduser().resolve()
+    return _ok(**scaffold_game_project(project, engine, title))
+
+
+@mcp.tool()
+def generate_game_from_assets(
+    project_path: str,
+    engine: str,
+    title: str,
+    asset_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """Scaffold a game project and import selected local assets."""
+    scaffold = scaffold_game_project(Path(project_path).expanduser().resolve(), engine, title)
+    imported = []
+    for asset_path in asset_paths or []:
+        imported.append(
+            import_asset_to_project(
+                asset_path,
+                scaffold["project_path"],
+                local_user_provided=True,
+            )
+        )
+    return _ok(scaffold=scaffold, imported=imported)
+
+
+@mcp.tool()
+def convert_assets(
+    paths: list[str],
+    output_format: str = "png",
+    output_folder: str | None = None,
+) -> dict[str, Any]:
+    """Convert image assets to png, webp, jpg, or jpeg. Other assets return warnings."""
+    folder = _subfolder_path(output_folder or f"converted-{output_format}")
+    converted: list[dict[str, Any]] = []
+    warnings: list[dict[str, str]] = []
+    for item in paths:
+        path = _resolve_read_path(item)
+        if path.suffix.lower() not in IMAGE_EXTS:
+            warnings.append({"path": str(path), "warning": "Only image conversion is currently supported."})
+            continue
+        out = _safe_output_path(folder, f"{path.stem}.{output_format.lower().lstrip('.')}")
+        with Image.open(path) as img:
+            image = img.convert("RGB") if output_format.lower() in {"jpg", "jpeg"} else img.convert("RGBA")
+            image.save(out)
+        converted.append({"source": str(path), "output": str(out), "sha256": _hash_file(out)})
+    return _ok(converted=converted, warnings=warnings)
 
 
 @mcp.tool()
@@ -831,12 +1184,25 @@ async def download_ambientcg_asset(
     matching = [dl for dl in downloads if preference in str(dl.get("attributes", "")).lower()]
     chosen = min(matching or downloads, key=lambda dl: dl.get("size") or 10**18)
     folder = _subfolder_path(subfolder or f"ambientcg-{_slug(asset_id)}")
-    downloaded = await _download(chosen["url"], folder)
+    download_result = await download_asset(
+        chosen["url"],
+        subfolder=str(folder.relative_to(LIBRARY_ROOT)),
+        title=asset.get("title") or asset_id,
+        source_name="ambientCG",
+        source_url=asset.get("url") or f"https://ambientcg.com/a/{asset_id}",
+        author="ambientCG",
+        license="CC0",
+        license_url="https://creativecommons.org/publicdomain/zero/1.0/",
+    )
+    if not download_result.get("ok"):
+        return download_result
+    downloaded = download_result["downloaded"]
     result: dict[str, Any] = {
         "asset_id": asset_id,
         "title": asset.get("title"),
         "chosen_download": chosen,
         "downloaded": downloaded,
+        "manifest_entry": download_result.get("manifest_entry"),
     }
     if auto_extract and downloaded["extension"] in ARCHIVE_EXTS:
         result["extracted"] = extract_archive(downloaded["path"], str(folder.relative_to(LIBRARY_ROOT)))
@@ -918,11 +1284,24 @@ async def download_kenney_asset(
         raise ValueError(f"No downloadable archive found on Kenney page: {asset_url}")
     chosen = archives[0]
     folder = _subfolder_path(subfolder or f"kenney-{_slug(metadata['title'])}")
-    downloaded = await _download(chosen["url"], folder)
+    download_result = await download_asset(
+        chosen["url"],
+        subfolder=str(folder.relative_to(LIBRARY_ROOT)),
+        title=metadata["title"],
+        source_name="Kenney",
+        source_url=asset_url,
+        author="Kenney",
+        license=metadata.get("license") or "CC0",
+        license_url="https://creativecommons.org/publicdomain/zero/1.0/",
+    )
+    if not download_result.get("ok"):
+        return download_result
+    downloaded = download_result["downloaded"]
     result: dict[str, Any] = {
         "metadata": metadata,
         "chosen_download": chosen,
         "downloaded": downloaded,
+        "manifest_entry": download_result.get("manifest_entry"),
     }
     if auto_extract:
         result["extracted"] = extract_archive(downloaded["path"], str(folder.relative_to(LIBRARY_ROOT)))
@@ -978,34 +1357,13 @@ async def search_asset_sources(
     sources: list[str] | None = None,
     max_results_per_source: int = 8,
 ) -> dict[str, Any]:
-    """Search multiple asset sources at once and return normalized results."""
-    requested = {item.lower() for item in (sources or ["opengameart", "kenney", "ambientcg", "openverse", "itch"])}
-    jobs: dict[str, Any] = {}
-    if "opengameart" in requested:
-        jobs["OpenGameArt"] = search_opengameart(query, max_results=max_results_per_source)
-    if "kenney" in requested:
-        jobs["Kenney"] = search_kenney_assets(query, max_results=max_results_per_source)
-    if "ambientcg" in requested:
-        jobs["ambientCG"] = search_ambientcg_assets(query, max_results=max_results_per_source)
-    if "openverse" in requested:
-        jobs["Openverse"] = search_openverse_images(query, max_results=max_results_per_source)
-    if "itch" in requested or "itch.io" in requested:
-        jobs["itch.io"] = search_itch_assets(query, max_results=max_results_per_source)
-
-    results: dict[str, Any] = {}
-    gathered = await asyncio.gather(*jobs.values(), return_exceptions=True)
-    for source_name, value in zip(jobs.keys(), gathered):
-        if isinstance(value, Exception):
-            results[source_name] = {"error": str(value), "results": []}
-        else:
-            results[source_name] = value
-    flat = []
-    for source_name, payload in results.items():
-        for item in payload.get("results", []):
-            if "source" not in item:
-                item = {**item, "source": source_name}
-            flat.append(item)
-    return {"query": query, "sources": list(jobs.keys()), "by_source": results, "results": flat}
+    """Compatibility wrapper around search_assets."""
+    return await search_assets(
+        query,
+        sources=sources,
+        max_results_per_source=max_results_per_source,
+        license_policy="all",
+    )
 
 
 @mcp.tool()
@@ -1031,10 +1389,53 @@ async def download_asset(
     url: str,
     subfolder: str | None = None,
     filename: str | None = None,
+    title: str | None = None,
+    source_name: str | None = None,
+    source_url: str | None = None,
+    author: str | None = None,
+    license: str | None = None,
+    license_url: str | None = None,
+    local_user_provided: bool = False,
 ) -> dict[str, Any]:
-    """Download a URL into the ASSETMCP asset library."""
+    """Download a URL into the asset library after strict license validation."""
+    asset = _asset_from_download_args(
+        url=url,
+        title=title,
+        source_name=source_name,
+        source_url=source_url,
+        author=author,
+        license=license,
+        license_url=license_url,
+        local_user_provided=local_user_provided,
+    )
+    license_check = check_asset_license(asset, local_user_provided=local_user_provided)
+    if not license_check.allowed:
+        return _error(
+            "blocked_license",
+            "Download blocked by license policy.",
+            asset=asset.to_dict(),
+            license_check=license_check.to_dict(),
+        )
     folder = _subfolder_path(subfolder)
-    return await _download(url, folder, filename)
+    try:
+        downloaded = await _download(url, folder, filename)
+        entry = upsert_manifest_entry(
+            _manifest_path(),
+            asset,
+            license_check,
+            [downloaded["path"]],
+            checksum_sha256=downloaded.get("sha256"),
+        )
+        credits = generate_credits()
+        suspicious = scan_suspicious_files(Path(downloaded["path"]).parent)
+        return _ok(
+            downloaded=downloaded,
+            manifest_entry=entry,
+            credits=credits,
+            suspicious_files=suspicious,
+        )
+    except Exception as exc:
+        return _error("download_failed", str(exc), url=url)
 
 
 @mcp.tool()
@@ -1044,7 +1445,7 @@ async def download_page_assets(
     subfolder: str | None = None,
     max_files: int = 10,
 ) -> dict[str, Any]:
-    """Discover a page and download matching asset links into the library."""
+    """Discover a page and download matching asset links only when license metadata is supplied."""
     wanted = set(kinds or ["archive", "image", "model"])
     body = await _fetch_html(page_url)
     links = [item for item in _discover_links(page_url, body) if item.kind in wanted]
@@ -1052,10 +1453,17 @@ async def download_page_assets(
     downloaded: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for item in links[:max_files]:
-        try:
-            downloaded.append(await _download(item.url, folder))
-        except Exception as exc:
-            errors.append({"url": item.url, "error": str(exc)})
+        result = await download_asset(
+            item.url,
+            subfolder=str(folder.relative_to(LIBRARY_ROOT)),
+            title=item.title,
+            source_name="Discovered Page",
+            source_url=page_url,
+        )
+        if result.get("ok"):
+            downloaded.append(result["downloaded"])
+        else:
+            errors.append({"url": item.url, "error": result.get("error", {}).get("message", "blocked")})
     return {
         "page_url": page_url,
         "matched": len(links),
@@ -1069,8 +1477,9 @@ async def download_page_assets(
 def extract_archive(
     archive_path: str,
     destination_folder: str | None = None,
+    allow_suspicious: bool = False,
 ) -> dict[str, Any]:
-    """Extract .zip, .tar.*, or .7z archives inside the ASSETMCP asset library."""
+    """Extract archives inside the asset library, blocking executable/script members by default."""
     _ensure_roots()
     archive = _resolve_read_path(archive_path)
     if not archive.exists():
@@ -1080,11 +1489,11 @@ def extract_archive(
     destination.mkdir(parents=True, exist_ok=True)
 
     if suffix == ".zip":
-        files = _extract_zip(archive, destination)
+        files = _extract_zip(archive, destination, allow_suspicious=allow_suspicious)
     elif suffix in {".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz"}:
-        files = _extract_tar(archive, destination)
+        files = _extract_tar(archive, destination, allow_suspicious=allow_suspicious)
     elif suffix == ".7z":
-        files = _extract_7z(archive, destination)
+        files = _extract_7z(archive, destination, allow_suspicious=allow_suspicious)
     else:
         raise ValueError(f"Unsupported archive type: {suffix or archive.suffix}")
 
