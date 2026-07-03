@@ -17,10 +17,10 @@ const TILE_SIZE = 3;
 const VIEW_RADIUS = 3;
 const PLAYER_SPEED = 7.6;
 const SPRINT_MULT = 1.55;
+const TURN_SPEED = 2.8;
 
 const keys = new Set();
 const chunks = new Map();
-const tmpVec = new THREE.Vector3();
 const clock = new THREE.Clock();
 
 let renderer;
@@ -30,7 +30,7 @@ let player;
 let character;
 let characterRig;
 let fallbackCharacter;
-let orbitYaw = Math.PI * 0.25;
+let cameraYawOffset = 0;
 let orbitPitch = 0.74;
 let dragging = false;
 let running = false;
@@ -328,22 +328,19 @@ function updateChunks() {
 }
 
 function updatePlayer(dt) {
-  const forward = Number(keys.has("KeyW") || keys.has("ArrowUp")) - Number(keys.has("KeyS") || keys.has("ArrowDown"));
-  const right = Number(keys.has("KeyD") || keys.has("ArrowRight")) - Number(keys.has("KeyA") || keys.has("ArrowLeft"));
+  const moveInput = Number(keys.has("KeyW") || keys.has("ArrowUp")) - Number(keys.has("KeyS") || keys.has("ArrowDown"));
+  const turnInput = Number(keys.has("KeyD") || keys.has("ArrowRight")) - Number(keys.has("KeyA") || keys.has("ArrowLeft"));
   const sprinting = keys.has("ShiftLeft") || keys.has("ShiftRight");
-  tmpVec.set(right, 0, forward);
-  const moving = tmpVec.lengthSq() > 0;
+
+  if (turnInput) {
+    player.rotation.y += turnInput * TURN_SPEED * dt;
+  }
+
+  const moving = moveInput !== 0;
   if (moving) {
-    tmpVec.normalize();
-    const cameraYaw = Math.atan2(camera.position.x - player.position.x, camera.position.z - player.position.z);
-    const sin = Math.sin(cameraYaw);
-    const cos = Math.cos(cameraYaw);
-    const moveX = tmpVec.x * cos - tmpVec.z * sin;
-    const moveZ = tmpVec.x * sin + tmpVec.z * cos;
     const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1);
-    player.position.x += moveX * speed * dt;
-    player.position.z += moveZ * speed * dt;
-    player.rotation.y = Math.atan2(moveX, moveZ);
+    player.position.x += Math.sin(player.rotation.y) * moveInput * speed * dt;
+    player.position.z += Math.cos(player.rotation.y) * moveInput * speed * dt;
   }
 
   const parts = fallbackCharacter?.userData?.parts;
@@ -363,8 +360,9 @@ function updateCamera() {
   const height = 7;
   const target = player.position.clone();
   target.y = 1.4;
-  const camX = target.x + Math.sin(orbitYaw) * Math.cos(orbitPitch) * radius;
-  const camZ = target.z + Math.cos(orbitYaw) * Math.cos(orbitPitch) * radius;
+  const cameraYaw = player.rotation.y + Math.PI + cameraYawOffset;
+  const camX = target.x + Math.sin(cameraYaw) * Math.cos(orbitPitch) * radius;
+  const camZ = target.z + Math.cos(cameraYaw) * Math.cos(orbitPitch) * radius;
   const camY = target.y + height + Math.sin(orbitPitch) * 3;
   camera.position.lerp(new THREE.Vector3(camX, camY, camZ), 0.12);
   camera.lookAt(target);
@@ -414,7 +412,7 @@ window.addEventListener("resize", resize);
 window.addEventListener("keydown", (event) => {
   keys.add(event.code);
   if (event.code === "KeyR") {
-    orbitYaw = Math.PI * 0.25;
+    cameraYawOffset = 0;
     orbitPitch = 0.74;
   }
 });
@@ -431,7 +429,7 @@ canvas.addEventListener("pointerup", (event) => {
 });
 canvas.addEventListener("pointermove", (event) => {
   if (!dragging) return;
-  orbitYaw -= event.movementX * 0.006;
+  cameraYawOffset -= event.movementX * 0.006;
   orbitPitch = THREE.MathUtils.clamp(orbitPitch + event.movementY * 0.004, 0.15, 1.08);
 });
 
