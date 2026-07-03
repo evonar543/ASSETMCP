@@ -7,7 +7,7 @@ const startButton = document.getElementById("start");
 const biomeText = document.getElementById("biome");
 const positionText = document.getElementById("position");
 
-const CHARACTER_GLB = "./assets/character-a-game-walk.glb";
+const CHARACTER_GLB = "../assets/flat_world-character-kenney/Models/GLB%20format/character-a.glb";
 const GRASS_TEXTURE = "../assets/zombie_fps/PNG/floor_ground_grass.png";
 const SAND_TEXTURE = "../assets/zombie_fps/PNG/floor_ground_sand.png";
 const DIRT_TEXTURE = "../assets/zombie_fps/PNG/floor_ground_dirt.png";
@@ -28,8 +28,7 @@ let scene;
 let camera;
 let player;
 let character;
-let characterMixer;
-let walkActions = [];
+let characterRig;
 let fallbackCharacter;
 let orbitYaw = Math.PI * 0.25;
 let orbitPitch = 0.74;
@@ -142,6 +141,68 @@ function createFallbackHumanoid() {
   return group;
 }
 
+function findNamedPart(root, name) {
+  let match = null;
+  root.traverse((child) => {
+    if (!match && child.name.toLowerCase().includes(name)) match = child;
+  });
+  return match;
+}
+
+function createCharacterRig(root) {
+  const parts = {
+    armLeft: findNamedPart(root, "arm-left"),
+    armRight: findNamedPart(root, "arm-right"),
+    legLeft: findNamedPart(root, "leg-left"),
+    legRight: findNamedPart(root, "leg-right"),
+    torso: findNamedPart(root, "torso"),
+    head: findNamedPart(root, "head"),
+  };
+  const base = new Map();
+  for (const part of Object.values(parts)) {
+    if (part) {
+      base.set(part, {
+        position: part.position.clone(),
+        rotation: part.rotation.clone(),
+      });
+    }
+  }
+  return {
+    parts,
+    base,
+    time: 0,
+    rootY: root.position.y,
+  };
+}
+
+function setPartPose(rig, part, target, blend) {
+  if (!part) return;
+  const base = rig.base.get(part);
+  if (!base) return;
+  part.rotation.x = THREE.MathUtils.lerp(part.rotation.x, base.rotation.x + (target.x || 0), blend);
+  part.rotation.y = THREE.MathUtils.lerp(part.rotation.y, base.rotation.y + (target.y || 0), blend);
+  part.rotation.z = THREE.MathUtils.lerp(part.rotation.z, base.rotation.z + (target.z || 0), blend);
+}
+
+function updateCharacterRig(dt, moving, sprinting) {
+  if (!characterRig || !character) return;
+  const { parts } = characterRig;
+  const blend = moving ? 0.42 : 0.2;
+  const strideSpeed = sprinting ? 9.8 : 7.2;
+  if (moving) characterRig.time += dt * strideSpeed;
+  const stride = moving ? Math.sin(characterRig.time) : 0;
+  const counterStride = -stride;
+  const bounce = moving ? Math.abs(Math.cos(characterRig.time)) * 0.045 : 0;
+
+  character.position.y = THREE.MathUtils.lerp(character.position.y, characterRig.rootY + bounce, blend);
+  setPartPose(characterRig, parts.armLeft, { x: stride * 0.46, z: -0.03 }, blend);
+  setPartPose(characterRig, parts.armRight, { x: counterStride * 0.46, z: 0.03 }, blend);
+  setPartPose(characterRig, parts.legLeft, { x: counterStride * 0.22 }, blend);
+  setPartPose(characterRig, parts.legRight, { x: stride * 0.22 }, blend);
+  setPartPose(characterRig, parts.torso, { z: stride * 0.025, x: moving ? -0.025 : 0 }, blend);
+  setPartPose(characterRig, parts.head, { z: stride * -0.018, x: moving ? 0.018 : 0 }, blend);
+}
+
 function setupPlayer() {
   player = new THREE.Group();
   scene.add(player);
@@ -152,7 +213,6 @@ function setupPlayer() {
     CHARACTER_GLB,
     (gltf) => {
       character = gltf.scene;
-      character.rotation.x = -Math.PI / 2;
       character.traverse((child) => {
         if (child.isMesh) {
           child.castShadow = true;
@@ -168,25 +228,14 @@ function setupPlayer() {
       character.position.sub(center);
       character.position.y += size.y * 0.5;
       character.scale.setScalar(2.4 / Math.max(size.y, 0.001));
-      characterMixer = gltf.animations.length ? new THREE.AnimationMixer(character) : null;
-      walkActions = characterMixer
-        ? gltf.animations.map((clip) => {
-            const action = characterMixer.clipAction(clip);
-            action.setLoop(THREE.LoopRepeat, Infinity);
-            action.play();
-            action.paused = true;
-            return action;
-          })
-        : [];
-      if (characterMixer) characterMixer.setTime(0);
+      characterRig = createCharacterRig(character);
       player.remove(fallbackCharacter);
       player.add(character);
     },
     undefined,
     () => {
       character = fallbackCharacter;
-      characterMixer = null;
-      walkActions = [];
+      characterRig = null;
     },
   );
 }
@@ -306,18 +355,7 @@ function updatePlayer(dt) {
     parts.legR.rotation.x = wave;
   }
 
-  if (characterMixer && walkActions.length) {
-    if (moving) {
-      for (const action of walkActions) action.paused = false;
-      characterMixer.update(dt * (sprinting ? 1.55 : 1));
-    } else {
-      characterMixer.setTime(0);
-      for (const action of walkActions) action.paused = true;
-    }
-  } else if (character && character !== fallbackCharacter) {
-    character.rotation.z = moving ? Math.sin(performance.now() / 110) * 0.035 : 0;
-    character.position.y = moving ? Math.abs(Math.sin(performance.now() / 130)) * 0.08 : 0;
-  }
+  updateCharacterRig(dt, moving, sprinting);
 }
 
 function updateCamera() {

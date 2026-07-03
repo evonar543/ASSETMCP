@@ -27,8 +27,7 @@ The page imports Three.js from a pinned CDN URL, so the browser needs network ac
 
 ## Assets
 
-- Kenney Blocky Characters, CC0: source model at `../assets/flat_world-character-kenney/Models/GLB format/character-a.glb`
-- ASSETMCP-generated walk loop derived from the Kenney character: `./assets/character-a-game-walk.glb`
+- Kenney Blocky Characters, CC0: `../assets/flat_world-character-kenney/Models/GLB format/character-a.glb`
 - Kenney Retro Textures Fantasy, CC0: grass/sand/dirt ground textures from `../assets/zombie_fps/PNG/`
 
 ## Notes
