@@ -17,11 +17,15 @@ const TILE_SIZE = 3;
 const VIEW_RADIUS = 3;
 const PLAYER_SPEED = 7.6;
 const SPRINT_MULT = 1.55;
-const TURN_SPEED = 2.8;
+const ATTACK_DURATION = 0.42;
+const ENEMY_COUNT = 8;
 
 const keys = new Set();
 const chunks = new Map();
 const clock = new THREE.Clock();
+const moveVector = new THREE.Vector3();
+const cameraForward = new THREE.Vector3();
+const cameraRight = new THREE.Vector3();
 
 let renderer;
 let scene;
@@ -30,7 +34,9 @@ let player;
 let character;
 let characterRig;
 let fallbackCharacter;
-let cameraYawOffset = 0;
+let enemies = [];
+let attackTime = 0;
+let cameraYaw = Math.PI;
 let orbitPitch = 0.74;
 let dragging = false;
 let running = false;
@@ -111,6 +117,23 @@ function setupMaterials() {
   materials.trunk = new THREE.MeshStandardMaterial({ color: 0x725132, roughness: 0.92 });
   materials.rock = new THREE.MeshStandardMaterial({ color: 0x717a78, roughness: 0.86 });
   materials.marker = new THREE.MeshStandardMaterial({ color: 0xfff2a8, emissive: 0x4d3500, emissiveIntensity: 0.25 });
+  materials.enemySkin = new THREE.MeshStandardMaterial({ color: 0x86b66f, roughness: 0.82 });
+  materials.enemyCloth = new THREE.MeshStandardMaterial({ color: 0x7c3241, roughness: 0.78 });
+  materials.swordBlade = new THREE.MeshStandardMaterial({
+    color: 0xf4fbff,
+    emissive: 0x324c58,
+    emissiveIntensity: 0.18,
+    metalness: 0.55,
+    roughness: 0.3,
+  });
+  materials.swordGrip = new THREE.MeshStandardMaterial({ color: 0x453022, roughness: 0.8 });
+  materials.slash = new THREE.MeshBasicMaterial({
+    color: 0x8fe8ff,
+    transparent: true,
+    opacity: 0.55,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
 }
 
 function createFallbackHumanoid() {
@@ -132,6 +155,52 @@ function createFallbackHumanoid() {
   legR.position.x = 0.23;
   group.add(head, body, armL, armR, legL, legR);
   group.userData.parts = { armL, armR, legL, legR };
+  group.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  return group;
+}
+
+function createSword() {
+  const sword = new THREE.Group();
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.36, 0.1), materials.swordBlade);
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.14), materials.swordBlade);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.38, 0.14), materials.swordGrip);
+  blade.position.y = 0.6;
+  guard.position.y = -0.08;
+  grip.position.y = -0.28;
+  sword.add(blade, guard, grip);
+  sword.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  return sword;
+}
+
+function createEnemy() {
+  const group = new THREE.Group();
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.62, 0.62), materials.enemySkin);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.9, 0.42), materials.enemyCloth);
+  const armLeft = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.82, 0.24), materials.enemySkin);
+  const armRight = armLeft.clone();
+  const legLeft = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.82, 0.28), materials.enemyCloth);
+  const legRight = legLeft.clone();
+
+  head.position.y = 2.18;
+  body.position.y = 1.46;
+  armLeft.position.set(-0.58, 1.48, 0);
+  armRight.position.set(0.58, 1.48, 0);
+  legLeft.position.set(-0.2, 0.48, 0);
+  legRight.position.set(0.2, 0.48, 0);
+  group.add(head, body, armLeft, armRight, legLeft, legRight);
+  group.userData.parts = { armLeft, armRight, legLeft, legRight, body, head };
+  group.userData.phase = Math.random() * Math.PI * 2;
+  group.userData.hitTime = 0;
   group.traverse((child) => {
     if (child.isMesh) {
       child.castShadow = true;
@@ -172,7 +241,27 @@ function createCharacterRig(root) {
     base,
     time: 0,
     rootY: root.position.y,
+    sword: null,
+    swordPivot: null,
   };
+}
+
+function attachSwordToCharacter(rig) {
+  const swordPivot = new THREE.Group();
+  swordPivot.position.set(0.78, 1.18, 0.24);
+  swordPivot.rotation.set(-0.2, 0, -0.56);
+  const sword = createSword();
+  sword.position.set(0, -0.16, 0.04);
+  const slashArc = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.035, 8, 32, Math.PI * 1.12), materials.slash);
+  slashArc.position.set(0, 0.48, 0);
+  slashArc.rotation.set(Math.PI / 2, 0, -0.65);
+  slashArc.visible = false;
+  swordPivot.add(sword);
+  swordPivot.add(slashArc);
+  player.add(swordPivot);
+  rig.sword = sword;
+  rig.swordPivot = swordPivot;
+  rig.slashArc = slashArc;
 }
 
 function setPartPose(rig, part, target, blend) {
@@ -184,23 +273,46 @@ function setPartPose(rig, part, target, blend) {
   part.rotation.z = THREE.MathUtils.lerp(part.rotation.z, base.rotation.z + (target.z || 0), blend);
 }
 
-function updateCharacterRig(dt, moving, sprinting) {
+function dampAngle(current, target, amount) {
+  const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  return current + delta * amount;
+}
+
+function updateCharacterRig(dt, movement, sprinting) {
   if (!characterRig || !character) return;
+  const { moving, backward, strafe } = movement;
   const { parts } = characterRig;
   const blend = moving ? 0.42 : 0.2;
   const strideSpeed = sprinting ? 9.8 : 7.2;
   if (moving) characterRig.time += dt * strideSpeed;
   const stride = moving ? Math.sin(characterRig.time) : 0;
-  const counterStride = -stride;
+  const direction = backward ? -1 : 1;
+  const counterStride = -stride * direction;
+  const directedStride = stride * direction;
+  const strafeLean = strafe * 0.12;
   const bounce = moving ? Math.abs(Math.cos(characterRig.time)) * 0.045 : 0;
 
   character.position.y = THREE.MathUtils.lerp(character.position.y, characterRig.rootY + bounce, blend);
-  setPartPose(characterRig, parts.armLeft, { x: stride * 0.46, z: -0.03 }, blend);
-  setPartPose(characterRig, parts.armRight, { x: counterStride * 0.46, z: 0.03 }, blend);
-  setPartPose(characterRig, parts.legLeft, { x: counterStride * 0.22 }, blend);
-  setPartPose(characterRig, parts.legRight, { x: stride * 0.22 }, blend);
-  setPartPose(characterRig, parts.torso, { z: stride * 0.025, x: moving ? -0.025 : 0 }, blend);
-  setPartPose(characterRig, parts.head, { z: stride * -0.018, x: moving ? 0.018 : 0 }, blend);
+  setPartPose(characterRig, parts.armLeft, { x: directedStride * 0.46, z: -0.03 + strafeLean }, blend);
+  setPartPose(characterRig, parts.armRight, { x: counterStride * 0.46, z: 0.03 + strafeLean }, blend);
+  setPartPose(characterRig, parts.legLeft, { x: counterStride * 0.22, z: strafe * 0.04 }, blend);
+  setPartPose(characterRig, parts.legRight, { x: directedStride * 0.22, z: strafe * 0.04 }, blend);
+  setPartPose(characterRig, parts.torso, { z: stride * 0.025 - strafeLean * 0.25, x: moving ? -0.025 * direction : 0 }, blend);
+  setPartPose(characterRig, parts.head, { z: stride * -0.018 + strafeLean * 0.18, x: moving ? 0.018 * direction : 0 }, blend);
+
+  if (characterRig.swordPivot) {
+    const phase = attackTime > 0 ? 1 - attackTime / ATTACK_DURATION : 0;
+    const slash = Math.sin(phase * Math.PI);
+    characterRig.swordPivot.rotation.x = -0.2 - slash * 0.9;
+    characterRig.swordPivot.rotation.y = slash * 0.35;
+    characterRig.swordPivot.rotation.z = -0.56 + slash * 1.65;
+    if (characterRig.slashArc) {
+      characterRig.slashArc.visible = slash > 0.08;
+      characterRig.slashArc.scale.setScalar(0.78 + slash * 0.34);
+      characterRig.slashArc.material.opacity = 0.18 + slash * 0.52;
+    }
+    setPartPose(characterRig, parts.armRight, { x: counterStride * 0.46 - slash * 0.82, y: slash * 0.28, z: 0.03 }, 0.55);
+  }
 }
 
 function setupPlayer() {
@@ -229,6 +341,7 @@ function setupPlayer() {
       character.position.y += size.y * 0.5;
       character.scale.setScalar(2.4 / Math.max(size.y, 0.001));
       characterRig = createCharacterRig(character);
+      attachSwordToCharacter(characterRig);
       player.remove(fallbackCharacter);
       player.add(character);
     },
@@ -238,6 +351,75 @@ function setupPlayer() {
       characterRig = null;
     },
   );
+}
+
+function setupEnemies() {
+  enemies = [];
+  for (let i = 0; i < ENEMY_COUNT; i += 1) {
+    const enemy = createEnemy();
+    const angle = (i / ENEMY_COUNT) * Math.PI * 2 + 0.4;
+    const radius = i === 0 ? 11 : 22 + hash2(i, 17) * 24;
+    enemy.position.set(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
+    enemy.rotation.y = angle + Math.PI;
+    scene.add(enemy);
+    enemies.push(enemy);
+  }
+}
+
+function updateEnemyAnimation(enemy, dt, moving) {
+  const parts = enemy.userData.parts;
+  enemy.userData.phase += dt * (moving ? 7.0 : 2.4);
+  const stride = Math.sin(enemy.userData.phase);
+  const wave = moving ? stride : stride * 0.12;
+  parts.armLeft.rotation.x = wave * 0.42;
+  parts.armRight.rotation.x = -wave * 0.42;
+  parts.legLeft.rotation.x = -wave * 0.3;
+  parts.legRight.rotation.x = wave * 0.3;
+  parts.body.rotation.z = moving ? stride * 0.035 : 0;
+  parts.head.rotation.z = moving ? -stride * 0.025 : 0;
+  enemy.position.y = moving ? Math.abs(Math.cos(enemy.userData.phase)) * 0.035 : 0;
+}
+
+function updateEnemies(dt) {
+  for (const enemy of enemies) {
+    const toPlayer = new THREE.Vector3().subVectors(player.position, enemy.position);
+    const distance = toPlayer.length();
+    const chasing = distance < 38;
+    if (chasing && distance > 2.4) {
+      toPlayer.y = 0;
+      toPlayer.normalize();
+      enemy.position.addScaledVector(toPlayer, dt * 2.15);
+      enemy.rotation.y = Math.atan2(toPlayer.x, toPlayer.z);
+    } else if (!chasing) {
+      const drift = Math.sin(performance.now() / 1400 + enemy.userData.phase) * 0.25;
+      enemy.rotation.y += drift * dt;
+    }
+
+    if (attackTime > ATTACK_DURATION * 0.45) {
+      const forward = new THREE.Vector3(Math.sin(player.rotation.y), 0, Math.cos(player.rotation.y));
+      const offset = new THREE.Vector3().subVectors(enemy.position, player.position);
+      const hitDistance = offset.length();
+      offset.y = 0;
+      const inArc = hitDistance < 3.2 && offset.normalize().dot(forward) > 0.45;
+      if (inArc) {
+        enemy.position.addScaledVector(forward, dt * 12);
+        enemy.userData.hitTime = 0.22;
+      }
+    }
+
+    if (enemy.userData.hitTime > 0) enemy.userData.hitTime -= dt;
+    enemy.traverse((child) => {
+      if (child.isMesh && child.material?.color) {
+        child.material.emissive?.setHex(enemy.userData.hitTime > 0 ? 0x552222 : 0x000000);
+      }
+    });
+    updateEnemyAnimation(enemy, dt, chasing);
+  }
+}
+
+function triggerAttack() {
+  if (!running) return;
+  attackTime = ATTACK_DURATION;
 }
 
 function createTree(x, z, scale) {
@@ -328,31 +510,40 @@ function updateChunks() {
 }
 
 function updatePlayer(dt) {
-  const moveInput = Number(keys.has("KeyW") || keys.has("ArrowUp")) - Number(keys.has("KeyS") || keys.has("ArrowDown"));
-  const turnInput = Number(keys.has("KeyD") || keys.has("ArrowRight")) - Number(keys.has("KeyA") || keys.has("ArrowLeft"));
+  const forwardInput = Number(keys.has("KeyW") || keys.has("ArrowUp")) - Number(keys.has("KeyS") || keys.has("ArrowDown"));
+  const strafeInput = Number(keys.has("KeyD") || keys.has("ArrowRight")) - Number(keys.has("KeyA") || keys.has("ArrowLeft"));
   const sprinting = keys.has("ShiftLeft") || keys.has("ShiftRight");
 
-  if (turnInput) {
-    player.rotation.y += turnInput * TURN_SPEED * dt;
-  }
+  camera.getWorldDirection(cameraForward);
+  cameraForward.y = 0;
+  cameraForward.normalize();
+  cameraRight.set(cameraForward.z, 0, -cameraForward.x);
+  moveVector.set(0, 0, 0);
+  moveVector.addScaledVector(cameraForward, forwardInput);
+  moveVector.addScaledVector(cameraRight, strafeInput);
 
-  const moving = moveInput !== 0;
+  const moving = moveVector.lengthSq() > 0.0001;
+  const backward = forwardInput < 0 && Math.abs(strafeInput) < 0.15;
   if (moving) {
+    moveVector.normalize();
     const speed = PLAYER_SPEED * (sprinting ? SPRINT_MULT : 1);
-    player.position.x += Math.sin(player.rotation.y) * moveInput * speed * dt;
-    player.position.z += Math.cos(player.rotation.y) * moveInput * speed * dt;
+    player.position.addScaledVector(moveVector, speed * dt);
+    const facingVector = backward ? cameraForward : moveVector;
+    const targetYaw = Math.atan2(facingVector.x, facingVector.z);
+    player.rotation.y = dampAngle(player.rotation.y, targetYaw, Math.min(1, dt * 12));
   }
 
   const parts = fallbackCharacter?.userData?.parts;
   if (parts) {
-    const wave = moving ? Math.sin(performance.now() / 95) * 0.55 : 0;
+    const direction = backward ? -1 : 1;
+    const wave = moving ? Math.sin(performance.now() / 95) * 0.55 * direction : 0;
     parts.armL.rotation.x = wave;
     parts.armR.rotation.x = -wave;
-    parts.legL.rotation.x = -wave;
-    parts.legR.rotation.x = wave;
+    parts.legL.rotation.x = -wave * 0.55;
+    parts.legR.rotation.x = wave * 0.55;
   }
 
-  updateCharacterRig(dt, moving, sprinting);
+  updateCharacterRig(dt, { moving, backward, strafe: strafeInput }, sprinting);
 }
 
 function updateCamera() {
@@ -360,7 +551,6 @@ function updateCamera() {
   const height = 7;
   const target = player.position.clone();
   target.y = 1.4;
-  const cameraYaw = player.rotation.y + Math.PI + cameraYawOffset;
   const camX = target.x + Math.sin(cameraYaw) * Math.cos(orbitPitch) * radius;
   const camZ = target.z + Math.cos(cameraYaw) * Math.cos(orbitPitch) * radius;
   const camY = target.y + height + Math.sin(orbitPitch) * 3;
@@ -377,7 +567,9 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.04);
   if (running) {
+    attackTime = Math.max(0, attackTime - dt);
     updatePlayer(dt);
+    updateEnemies(dt);
     updateChunks();
     updateCamera();
     updateHud();
@@ -403,6 +595,7 @@ function init() {
   setupRenderer();
   setupMaterials();
   setupPlayer();
+  setupEnemies();
   updateChunks();
   updateCamera();
   animate();
@@ -411,8 +604,12 @@ function init() {
 window.addEventListener("resize", resize);
 window.addEventListener("keydown", (event) => {
   keys.add(event.code);
+  if (event.code === "Space") {
+    event.preventDefault();
+    triggerAttack();
+  }
   if (event.code === "KeyR") {
-    cameraYawOffset = 0;
+    cameraYaw = player.rotation.y + Math.PI;
     orbitPitch = 0.74;
   }
 });
@@ -429,7 +626,7 @@ canvas.addEventListener("pointerup", (event) => {
 });
 canvas.addEventListener("pointermove", (event) => {
   if (!dragging) return;
-  cameraYawOffset -= event.movementX * 0.006;
+  cameraYaw -= event.movementX * 0.006;
   orbitPitch = THREE.MathUtils.clamp(orbitPitch + event.movementY * 0.004, 0.15, 1.08);
 });
 

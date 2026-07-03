@@ -20,10 +20,10 @@ The page imports Three.js from a pinned CDN URL, so the browser needs network ac
 
 ## Controls
 
-- `W` / `S`: move forward and backward
-- `A` / `D`: turn left and right
+- `WASD` or arrow keys: move relative to the camera
 - `Shift`: sprint
-- Mouse drag: orbit camera without changing movement direction
+- `Space`: sword slash
+- Mouse drag: guide the camera
 - `R`: recenter camera
 
 ## Assets
