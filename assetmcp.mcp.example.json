@@ -9,7 +9,8 @@
       "env": {
         "ASSETMCP_LIBRARY_DIR": "C:\\path\\to\\ASSETMCP\\assets",
         "ASSETMCP_PREVIEW_DIR": "C:\\path\\to\\ASSETMCP\\previews",
-        "ASSETMCP_MAX_DOWNLOAD_MB": "512"
+        "ASSETMCP_MAX_DOWNLOAD_MB": "512",
+        "ASSETMCP_BLENDER_PATH": "C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe"
       }
     }
   }

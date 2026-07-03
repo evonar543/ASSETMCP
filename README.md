@@ -15,6 +15,7 @@ It is designed for coding agents that need a practical "Game Asset Forge" workfl
 - Extract `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tgz`, and `.7z` archives.
 - Inspect images for dimensions, transparency, dominant colors, content bounds, edge density, and rough shape.
 - Inspect 3D assets for geometry counts, bounds, extents, GLTF metadata, animation/material counts, and rough shape.
+- Use Blender, when installed, for deeper model hierarchy/bone/material inspection, real PNG renders, and simple generated idle GLB exports.
 - Generate PNG contact sheets for image folders.
 - Generate local HTML galleries for images and GLB/GLTF models.
 - Create local browser viewers for GLB/GLTF files.
@@ -29,6 +30,7 @@ It is designed for coding agents that need a practical "Game Asset Forge" workfl
 - Python 3.11 or newer
 - Git, if you want to clone or contribute
 - An MCP client that supports stdio servers
+- Optional: Blender 4.x/5.x for the `blender_*` tools and production-quality model screenshots
 
 The project uses these main Python libraries:
 
@@ -116,7 +118,8 @@ Use this shape in your MCP client config. Update the paths if you cloned the pro
       "env": {
         "ASSETMCP_LIBRARY_DIR": "C:\\path\\to\\ASSETMCP\\assets",
         "ASSETMCP_PREVIEW_DIR": "C:\\path\\to\\ASSETMCP\\previews",
-        "ASSETMCP_MAX_DOWNLOAD_MB": "512"
+        "ASSETMCP_MAX_DOWNLOAD_MB": "512",
+        "ASSETMCP_BLENDER_PATH": "C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe"
       }
     }
   }
@@ -134,7 +137,26 @@ ASSETMCP uses these environment variables:
 | `ASSETMCP_LIBRARY_DIR` | `./assets` | Where downloads and extracted files are stored. |
 | `ASSETMCP_PREVIEW_DIR` | `./previews` | Where generated contact sheets, galleries, and model viewers are stored. |
 | `ASSETMCP_MAX_DOWNLOAD_MB` | `512` | Maximum size for a single download. |
+| `ASSETMCP_BLENDER_PATH` | auto-detected | Absolute path to `blender.exe` or `blender` for Blender-backed tools. |
 | `ASSETMCP_TRANSPORT` | `stdio` | MCP transport: `stdio`, `sse`, or `streamable-http`. |
+
+## Optional Blender Setup
+
+ASSETMCP works without Blender, but Blender unlocks higher-fidelity model reading and real screenshots:
+
+```powershell
+$env:ASSETMCP_BLENDER_PATH = "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"
+.\.venv\Scripts\python.exe -m assetmcp.server
+```
+
+The Blender-backed tools run Blender in background mode with generated scripts that only import local model files and write outputs inside the configured preview directory:
+
+- `blender_info`: Check whether Blender is available.
+- `blender_inspect_model`: Read scene objects, mesh stats, dimensions, hierarchy, materials, armatures, bones, animation clips, and semantic name hints such as head/torso/arm/leg.
+- `blender_render_model`: Render a real PNG screenshot from `iso`, `front`, `back`, `left`, `right`, or `top`.
+- `blender_create_idle_animation`: Export a GLB with a simple generated idle/bob animation for quick prototyping.
+
+These tools are separate from live Blender MCP bridges. A live bridge can control an open Blender GUI and may execute arbitrary Blender Python, so only enable that bridge in clients and projects you trust.
 
 ## Tool Reference
 
@@ -176,6 +198,10 @@ ASSETMCP uses these environment variables:
 - `make_image_contact_sheet`: Build a PNG contact sheet for image browsing.
 - `create_asset_gallery`: Build a local HTML gallery for images and GLB/GLTF models.
 - `create_3d_viewer`: Build a local browser viewer for `.glb` or `.gltf`.
+- `blender_info`: Check Blender availability for advanced model jobs.
+- `blender_inspect_model`: Inspect model hierarchy, shapes, materials, bones, and animations using Blender.
+- `blender_render_model`: Render a real PNG screenshot of a model using Blender.
+- `blender_create_idle_animation`: Export a simple generated idle animation as GLB.
 - `slice_sprite_sheet`: Slice a sprite sheet or tileset into PNG frames.
 - `extract_archive`: Extract supported archives safely inside the asset library.
 - `convert_assets`: Convert image assets to PNG, WebP, JPG, or JPEG.

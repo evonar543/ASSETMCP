@@ -39,6 +39,12 @@ from assetmcp.providers import PROVIDERS, search_providers
 from assetmcp.schemas import AssetResult, normalize_asset_result
 from assetmcp.services.file_scanner import scan_suspicious_files
 from assetmcp.services.file_scanner import SUSPICIOUS_EXTS
+from assetmcp.services.blender_tools import (
+    blender_status,
+    create_idle_animation as blender_create_idle_animation_file,
+    inspect_model as blender_inspect_model_file,
+    render_model as blender_render_model_file,
+)
 from assetmcp.services.license_checker import check_asset_license
 from assetmcp.services.manifest import (
     CREDITS_FILENAME,
@@ -65,7 +71,7 @@ USER_AGENT = (
 )
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tga", ".tif", ".tiff"}
-MODEL_EXTS = {".glb", ".gltf", ".obj", ".stl", ".ply", ".dae", ".3mf", ".off"}
+MODEL_EXTS = {".glb", ".gltf", ".fbx", ".obj", ".stl", ".ply", ".dae", ".3mf", ".off"}
 AUDIO_EXTS = {".wav", ".ogg", ".mp3", ".flac", ".m4a"}
 ARCHIVE_EXTS = {".zip", ".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz", ".7z"}
 TEXTURE_HINTS = ("texture", "spritesheet", "sprite", "tileset", "tile", "atlas")
@@ -709,6 +715,7 @@ def library_info() -> dict[str, Any]:
         "providers": sorted(PROVIDERS.keys()),
         "manifest_filename": MANIFEST_FILENAME,
         "credits_filename": CREDITS_FILENAME,
+        "blender": blender_status(),
     }
 
 
@@ -1640,6 +1647,49 @@ def create_3d_viewer(path: str, output_name: str | None = None) -> dict[str, Any
 """
     output.write_text(document, encoding="utf-8")
     return {"viewer_path": str(output), "model_path": str(target)}
+
+
+@mcp.tool()
+def blender_info() -> dict[str, Any]:
+    """Report whether ASSETMCP can run Blender-backed model jobs."""
+    return blender_status()
+
+
+@mcp.tool()
+def blender_inspect_model(path: str) -> dict[str, Any]:
+    """Inspect a model with Blender, including scene hierarchy, bones, materials, and animations."""
+    target = _resolve_read_path(path)
+    basic = _inspect_model(target)
+    blender = blender_inspect_model_file(target)
+    return {"path": str(target), "basic_inspection": basic, "blender_inspection": blender}
+
+
+@mcp.tool()
+def blender_render_model(
+    path: str,
+    output_name: str | None = None,
+    view: str = "iso",
+    resolution: int = 1024,
+) -> dict[str, Any]:
+    """Render a real PNG screenshot of a local model using Blender."""
+    _ensure_roots()
+    target = _resolve_read_path(path)
+    output = _safe_preview_path(output_name or f"{target.stem}-{view}-render.png", ".png")
+    result = blender_render_model_file(target, output, view=view, resolution=resolution)
+    return {"path": str(target), **result}
+
+
+@mcp.tool()
+def blender_create_idle_animation(
+    path: str,
+    output_name: str | None = None,
+) -> dict[str, Any]:
+    """Export a GLB with a simple generated idle animation for quick prototyping."""
+    _ensure_roots()
+    target = _resolve_read_path(path)
+    output = _safe_preview_path(output_name or f"{target.stem}-assetmcp-idle.glb", ".glb")
+    result = blender_create_idle_animation_file(target, output)
+    return {"path": str(target), **result}
 
 
 @mcp.tool()
