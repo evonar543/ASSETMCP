@@ -319,7 +319,13 @@ def create_idle_animation(
     *,
     blender_path: str | None = None,
 ) -> dict[str, Any]:
-    """Export a GLB with a simple generated idle animation."""
+    """Export a GLB with a generated idle/walk animation.
+
+    The animation first looks for semantic mesh names such as arm-left,
+    leg-right, torso, and head. Many free low-poly assets are not rigged, but
+    they do have separated body-part meshes with useful origins; animating those
+    parts produces a much better result than moving the whole model as one root.
+    """
     _ensure_supported_model(model_path)
     if output_path.suffix.lower() != ".glb":
         output_path = output_path.with_suffix(".glb")
@@ -332,21 +338,64 @@ import math
 
 import_model(MODEL_PATH)
 bpy.context.scene.frame_start = 1
-bpy.context.scene.frame_end = 72
+bpy.context.scene.frame_end = 48
 
 animated_objects = []
-root_objects = [obj for obj in bpy.context.scene.objects if obj.parent is None and obj.type in {"MESH", "ARMATURE", "EMPTY"}]
-for obj in root_objects:
+animated_parts = []
+
+def find_part(*needles):
+    for obj in bpy.context.scene.objects:
+        lower = obj.name.lower()
+        if obj.type in {"MESH", "EMPTY", "ARMATURE"} and all(needle in lower for needle in needles):
+            return obj
+    return None
+
+def key_rotation(obj, axis, values):
+    if not obj:
+        return
+    start = obj.rotation_euler.copy()
+    for frame, angle in values:
+        bpy.context.scene.frame_set(frame)
+        obj.rotation_euler = start.copy()
+        setattr(obj.rotation_euler, axis, getattr(obj.rotation_euler, axis) + angle)
+        obj.keyframe_insert(data_path="rotation_euler", frame=frame)
+    animated_parts.append(obj.name)
+
+def key_root(obj):
+    if not obj:
+        return
     start_location = obj.location.copy()
     start_rotation = obj.rotation_euler.copy()
-    for frame, z_offset, yaw in ((1, 0.0, 0.0), (36, 0.045, 0.035), (72, 0.0, 0.0)):
+    for frame, z_offset, lean in ((1, 0.0, 0.0), (12, 0.06, 0.035), (24, 0.0, 0.0), (36, 0.06, -0.035), (48, 0.0, 0.0)):
         bpy.context.scene.frame_set(frame)
         obj.location = start_location + Vector((0, 0, z_offset))
         obj.rotation_euler = start_rotation.copy()
-        obj.rotation_euler.z += yaw
+        obj.rotation_euler.y += lean
         obj.keyframe_insert(data_path="location", frame=frame)
         obj.keyframe_insert(data_path="rotation_euler", frame=frame)
     animated_objects.append(obj.name)
+
+root = find_part("root") or find_part("character") or next(
+    (obj for obj in bpy.context.scene.objects if obj.parent is None and obj.type in {"MESH", "ARMATURE", "EMPTY"}),
+    None,
+)
+key_root(root)
+
+frames = (1, 12, 24, 36, 48)
+semantic_swings = (
+    (find_part("arm", "left"), "x", (0.48, -0.45, 0.48, -0.45, 0.48)),
+    (find_part("arm", "right"), "x", (-0.48, 0.45, -0.48, 0.45, -0.48)),
+    (find_part("leg", "left"), "x", (-0.34, 0.31, -0.34, 0.31, -0.34)),
+    (find_part("leg", "right"), "x", (0.34, -0.31, 0.34, -0.31, 0.34)),
+    (find_part("torso") or find_part("body"), "z", (0.0, -0.055, 0.0, 0.055, 0.0)),
+    (find_part("head"), "z", (0.0, 0.045, 0.0, -0.045, 0.0)),
+)
+for obj, axis, angles in semantic_swings:
+    key_rotation(obj, axis, tuple(zip(frames, angles)))
+
+head = find_part("head")
+if head:
+    key_rotation(head, "x", ((1, 0.0), (12, -0.035), (24, 0.0), (36, 0.035), (48, 0.0)))
 
 animated_bones = []
 for armature in [obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE"]:
@@ -357,14 +406,17 @@ for armature in [obj for obj in bpy.context.scene.objects if obj.type == "ARMATU
             continue
         pose_bone.rotation_mode = "XYZ"
         direction = -1.0 if any(token in lower for token in ("left", ".l", "_l")) else 1.0
-        for frame, angle in ((1, 0.0), (36, 0.08 * direction), (72, 0.0)):
+        for frame, angle in ((1, 0.0), (12, 0.16 * direction), (24, 0.0), (36, -0.16 * direction), (48, 0.0)):
             bpy.context.scene.frame_set(frame)
             pose_bone.rotation_euler.x = angle
             pose_bone.keyframe_insert(data_path="rotation_euler", frame=frame)
         animated_bones.append(f"{armature.name}:{pose_bone.name}")
 
 for action in bpy.data.actions:
-    action.name = "ASSETMCP_generated_idle"
+    action.name = "ASSETMCP_generated_part_aware_idle"
+    for fcurve in getattr(action, "fcurves", []):
+        for point in fcurve.keyframe_points:
+            point.interpolation = "BEZIER"
 
 bpy.ops.export_scene.gltf(
     filepath=str(OUTPUT_PATH),
@@ -378,8 +430,9 @@ emit(
         "source_model_path": str(MODEL_PATH),
         "animated_model_path": str(OUTPUT_PATH),
         "frame_start": 1,
-        "frame_end": 72,
+        "frame_end": 48,
         "animated_objects": animated_objects,
+        "animated_parts": animated_parts,
         "animated_bones": animated_bones[:200],
     }
 )

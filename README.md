@@ -154,7 +154,7 @@ The Blender-backed tools run Blender in background mode with generated scripts t
 - `blender_info`: Check whether Blender is available.
 - `blender_inspect_model`: Read scene objects, mesh stats, dimensions, hierarchy, materials, armatures, bones, animation clips, and semantic name hints such as head/torso/arm/leg.
 - `blender_render_model`: Render a real PNG screenshot from `iso`, `front`, `back`, `left`, `right`, or `top`.
-- `blender_create_idle_animation`: Export a GLB with a simple generated idle/bob animation for quick prototyping.
+- `blender_create_idle_animation`: Export a GLB with a part-aware generated idle/walk loop for quick prototyping. It uses named body-part meshes such as arms, legs, torso, and head when they exist.
 
 These tools are separate from live Blender MCP bridges. A live bridge can control an open Blender GUI and may execute arbitrary Blender Python, so only enable that bridge in clients and projects you trust.
 
@@ -201,7 +201,7 @@ These tools are separate from live Blender MCP bridges. A live bridge can contro
 - `blender_info`: Check Blender availability for advanced model jobs.
 - `blender_inspect_model`: Inspect model hierarchy, shapes, materials, bones, and animations using Blender.
 - `blender_render_model`: Render a real PNG screenshot of a model using Blender.
-- `blender_create_idle_animation`: Export a simple generated idle animation as GLB.
+- `blender_create_idle_animation`: Export a part-aware generated idle/walk animation as GLB.
 - `slice_sprite_sheet`: Slice a sprite sheet or tileset into PNG frames.
 - `extract_archive`: Extract supported archives safely inside the asset library.
 - `convert_assets`: Convert image assets to PNG, WebP, JPG, or JPEG.
