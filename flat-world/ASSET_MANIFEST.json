@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "project_title": "Flat World Walker",
+  "assets": [
+    {
+      "id": "kenney:blocky-characters",
+      "title": "Blocky Characters",
+      "source_name": "Kenney",
+      "source_url": "https://kenney.nl/assets/blocky-characters",
+      "author": "Kenney",
+      "license": "CC0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution_required": false,
+      "files": [
+        "../assets/flat_world-character-kenney/Models/GLB format/character-a.glb",
+        "./assets/character-a-game-walk.glb"
+      ]
+    },
+    {
+      "id": "kenney:retro-textures-fantasy",
+      "title": "Retro Textures Fantasy",
+      "source_name": "Kenney",
+      "source_url": "https://kenney.nl/assets/retro-textures-fantasy",
+      "author": "Kenney",
+      "license": "CC0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution_required": false,
+      "files": [
+        "../assets/zombie_fps/PNG/floor_ground_grass.png",
+        "../assets/zombie_fps/PNG/floor_ground_sand.png",
+        "../assets/zombie_fps/PNG/floor_ground_dirt.png"
+      ]
+    }
+  ]
+}

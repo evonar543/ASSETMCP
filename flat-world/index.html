@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flat World Walker</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="world"></canvas>
+      <section id="menu" class="overlay">
+        <h1>Flat World Walker</h1>
+        <button id="start" type="button">Start</button>
+      </section>
+      <section id="hud">
+        <div><span>Biome</span><strong id="biome">Meadow</strong></div>
+        <div><span>Position</span><strong id="position">0, 0</strong></div>
+        <div><span>Seed</span><strong>ASSETMCP</strong></div>
+      </section>
+      <div id="hint">WASD move - Shift sprint - Mouse drag orbit - R recenter</div>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

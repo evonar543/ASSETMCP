@@ -383,10 +383,10 @@ key_root(root)
 
 frames = (1, 12, 24, 36, 48)
 semantic_swings = (
-    (find_part("arm", "left"), "x", (0.48, -0.45, 0.48, -0.45, 0.48)),
-    (find_part("arm", "right"), "x", (-0.48, 0.45, -0.48, 0.45, -0.48)),
-    (find_part("leg", "left"), "x", (-0.34, 0.31, -0.34, 0.31, -0.34)),
-    (find_part("leg", "right"), "x", (0.34, -0.31, 0.34, -0.31, 0.34)),
+    (find_part("arm", "left"), "x", (0.0, 0.48, 0.0, -0.45, 0.0)),
+    (find_part("arm", "right"), "x", (0.0, -0.48, 0.0, 0.45, 0.0)),
+    (find_part("leg", "left"), "x", (0.0, -0.34, 0.0, 0.31, 0.0)),
+    (find_part("leg", "right"), "x", (0.0, 0.34, 0.0, -0.31, 0.0)),
     (find_part("torso") or find_part("body"), "z", (0.0, -0.055, 0.0, 0.055, 0.0)),
     (find_part("head"), "z", (0.0, 0.045, 0.0, -0.045, 0.0)),
 )
